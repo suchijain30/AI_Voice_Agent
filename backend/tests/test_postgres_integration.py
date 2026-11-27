@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
 from threading import Lock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -136,12 +136,23 @@ def test_postgres_migrations_and_concurrent_duplicate_protection(monkeypatch):
                 "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'ck_calls_status'"
             ))
             assert "finalizing" in call_check
-            index_definition = connection.scalar(text(
-                "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' "
-                "AND indexname = 'uq_calls_one_bolna_per_candidate'"
-            ))
-            assert index_definition and "UNIQUE INDEX" in index_definition.upper()
-            assert "provider = 'bolna'" in index_definition
+            index_meta = connection.execute(text(
+                "SELECT i.indisunique, pg_get_expr(i.indpred, i.indrelid) AS predicate, "
+                "array_agg(a.attname ORDER BY k.ord) AS columns "
+                "FROM pg_index i "
+                "JOIN pg_class idx ON idx.oid = i.indexrelid "
+                "JOIN pg_namespace ns ON ns.oid = idx.relnamespace "
+                "JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) ON true "
+                "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum "
+                "WHERE ns.nspname = 'public' AND idx.relname = 'uq_calls_one_bolna_per_candidate' "
+                "GROUP BY i.indisunique, i.indpred, i.indrelid"
+            )).mappings().one()
+            assert index_meta["indisunique"] is True
+            assert list(index_meta["columns"]) == ["candidate_id"]
+            normalized_predicate = " ".join(
+                (index_meta["predicate"] or "").replace("::text", "").replace("(", "").replace(")", "").lower().split()
+            )
+            assert normalized_predicate == "provider = 'bolna'"
 
         with TestClient(app) as client:
             # Existing candidate-level uniqueness race remains protected.
@@ -155,10 +166,11 @@ def test_postgres_migrations_and_concurrent_duplicate_protection(monkeypatch):
             candidate_barrier = Barrier(2)
 
             def wait_for_candidate_duplicate_prechecks(connection, cursor, statement, parameters, context, executemany):
+                normalized_sql = " ".join(statement.split())
                 if (
-                    statement.lstrip().upper().startswith("SELECT")
-                    and "normalized_phone_number" in statement
-                    and "normalized_job_title" in statement
+                    normalized_sql.upper().startswith("SELECT CANDIDATES.ID FROM CANDIDATES WHERE")
+                    and "normalized_phone_number" in normalized_sql
+                    and "normalized_job_title" in normalized_sql
                 ):
                     candidate_barrier.wait(timeout=15)
 
@@ -340,11 +352,11 @@ def test_postgres_migrations_and_concurrent_duplicate_protection(monkeypatch):
         # Once protected data is explicitly cleared in this disposable test DB,
         # a safe downgrade and re-upgrade should work without schema loss.
         with sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)() as db:
+            db.execute(text(
+                "UPDATE screening_sessions SET provider_transcript = NULL, provider_summary = NULL, "
+                "provider_extracted_data = NULL, provider_call_duration_seconds = NULL"
+            ))
             screening = db.get(ScreeningSession, protected_session_id)
-            screening.provider_transcript = None
-            screening.provider_summary = None
-            screening.provider_extracted_data = None
-            screening.provider_call_duration_seconds = None
             db.delete(db.get(Call, protected_call_id))
             db.delete(screening)
             db.delete(db.get(Candidate, protected_candidate_id))
@@ -368,4 +380,7 @@ def test_postgres_migrations_and_concurrent_duplicate_protection(monkeypatch):
                         "provider_extracted_data = NULL, provider_call_duration_seconds = NULL"
                     ))
             command.downgrade(alembic_config, "base")
+            with engine.begin() as connection:
+                if connection.scalar(text("SELECT count(*) FROM alembic_version")) == 0:
+                    connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
         engine.dispose()

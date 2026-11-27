@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.screenings.extraction import ScreeningResultProcessor
 from app.screenings.questions import INITIAL_SCREENING_QUESTIONS
 from app.screenings.schemas import (
     ScreeningAnswerRead,
@@ -52,6 +53,20 @@ def create_screening_session(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ScreeningStorageError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get(
+    "/api/candidates/{candidate_id}/screening-sessions",
+    response_model=list[ScreeningSessionRead],
+)
+def list_candidate_screening_sessions(
+    candidate_id: UUID,
+    service: ScreeningService = Depends(get_screening_service),
+) -> list[ScreeningSessionRead]:
+    try:
+        return service.list_sessions_for_candidate(candidate_id)
+    except ScreeningCandidateNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/api/screening-sessions/{session_id}", response_model=ScreeningSessionRead)
@@ -153,3 +168,24 @@ def get_screening_evaluation(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ScreeningEvaluationUnavailable as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/screening-sessions/{session_id}/process-results",
+    response_model=ScreeningSessionRead,
+)
+def process_screening_results(
+    session_id: UUID,
+    service: ScreeningService = Depends(get_screening_service),
+) -> ScreeningSessionRead:
+    try:
+        service.get_session(session_id)
+    except ScreeningSessionNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    processed = ScreeningResultProcessor(service.db).process_provider_results(session_id)
+    if not processed:
+        raise HTTPException(
+            status_code=409,
+            detail="No provider transcript, summary, or extracted data is available to process yet.",
+        )
+    return service.get_session(session_id)

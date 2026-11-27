@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     app_name: str = "AI HR Recruitment Voice Agent API"
     app_env: str = "development"
     database_url: str = Field(min_length=1)
-    cors_origins: str = "http://localhost:5173"
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     mock_calls_enabled: bool = False
 
     model_config = SettingsConfigDict(

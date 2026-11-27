@@ -16,6 +16,7 @@ from app.calls.service import CallLifecycleService, CallNotFound, CallStorageErr
 from app.calls.types import CallStatus
 from app.models import Call, ScreeningSession
 from app.config import BolnaSettings
+from app.screenings.extraction import ScreeningResultProcessor
 
 MAX_PERSISTED_RESULTS_BYTES = 256_000
 
@@ -133,6 +134,7 @@ class BolnaSyncService:
                         int(execution.duration) if execution.duration is not None else None
                     )
                     self.db.commit()
+                    ScreeningResultProcessor(self.db).process_provider_results(session.id)
                 except ProviderRetrievalError:
                     self.db.rollback()
                     raise

@@ -99,6 +99,18 @@ class ScreeningService:
     def get_session(self, session_id: UUID) -> ScreeningSessionRead:
         return self._session_read(self._get_session_model(session_id))
 
+    def list_sessions_for_candidate(self, candidate_id: UUID) -> list[ScreeningSessionRead]:
+        if self.db.get(Candidate, candidate_id) is None:
+            raise ScreeningCandidateNotFound("Candidate not found.")
+        sessions = list(
+            self.db.scalars(
+                select(ScreeningSession)
+                .where(ScreeningSession.candidate_id == candidate_id)
+                .order_by(ScreeningSession.created_at.desc())
+            ).all()
+        )
+        return [self._session_read(item) for item in sessions]
+
     def update_status(self, session_id: UUID, next_status: ScreeningSessionStatus) -> ScreeningSessionRead:
         session = self._get_session_model(session_id)
         current = ScreeningSessionStatus(session.status)

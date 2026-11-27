@@ -186,10 +186,10 @@ class CallLifecycleService:
             configuration_metadata={"provider_outcome": "pending"},
         )
         self.db.add(call)
-        if screening_session is not None:
-            self.db.flush()
-            screening_session.call_id = call.id
         try:
+            if screening_session is not None:
+                self.db.flush()
+                screening_session.call_id = call.id
             self.db.commit()
         except IntegrityError as exc:
             self.db.rollback()
